@@ -1,62 +1,235 @@
-clear all;
-clc;
-% 输入彩色图像
-I = imread('image/4.jpg');
-% 将图像转化为灰度
-f = rgb2gray(I);
-% f = checkerboard(50,3,3);
 
-% 设置影响因子
-k = 0.04;
-% 设置阈值系数
-q = 0.01;
-% 设置尺度大小为sobel核来对图像像素点进行第一次滤波
-fn = [2,1,0,-1,-2;
-      2,1,0,-1,-2;
-      4,2,0,-2,-4;
-      2,1,0,-1,-2;
-      2,1,0,-1,-2];
-fx = filter2(fn,f);
-fy = filter2(fn',f);
-% 计算矩阵中的元素
-% 设定尺度大小为5*5，sigma为2的高斯核
-w = fspecial('gaussian',[5 5],2);
-A = filter2(w,fx.^2);
-B = filter2(w,fy.^2);
-C = filter2(w,fx.*fy);
-% f函数矩阵的行尺度
-height = size(f,1);
-% f 函数矩阵的列尺度
-width = size(f,2);
-%生成和f同样大小的零矩阵
-result = zeros(height, width);
 
-%求依次求出图像中每个像素点的评分函数R
-l = zeros(height*width,2);
-R = zeros(height,width);
-Rmax = 0;
-for i = 1:height
-    for j = 1:width
-        M = [A(i,j),C(i,j);C(i,j),B(i,j)];
-        R(i,j) = det(M)-k*((trace(M)))^2;   
-        if (R(i,j)>Rmax)
-            Rmax = R(i,j);
-        end
-    end
-end
-% 提取出高于阈值的像素点来作为角点
-R_corner = (R>=(q*Rmax)).*R;
-%在窗口的左侧绘制通过滤波后角点的位置
-[x1,y1] = find(R_corner~=0);
+(*触发信号处理*)
+fbExecuteEdge(CLK:= (bXmlSrvWrite AND NOT bXmlSrvRead AND NOT bFileDelete) OR
+					    (bXmlSrvRead AND NOT bXmlSrvWrite AND NOT bFileDelete) OR
+					    (bFileDelete AND NOT bXmlSrvWrite AND NOT bXmlSrvRead) );
 
-subplot(1,2,1),imshow(I),title('CornerDetector');
-hold on 
-plot(y1,x1,'b*')
-hold off
-% 找出每个点[8,8]领域内的最大响应点?非极大值抑制
-[xp,yp] = find(imregionalmax(R_corner,8));
-%在窗口的右侧，在原图上标记上角点
-subplot(1,2,2),imshow(I), title('CornerDetectorAfterNMS'),
-hold on
-plot(yp,xp, 'b*');
-hold off
+IF fbExecuteEdge.Q AND NOT bBusy AND NOT bError THEN
+	IF bXmlSrvWrite THEN
+		eOperation :=XML_SRV_WRITE;
+	ELSIF bXmlSrvRead THEN
+		eOperation :=XML_SRV_READ;
+	ELSIF bFileDelete THEN
+		eOperation := FILE_DELETE;
+	END_IF;
+	nStep :=1;
+END_IF;
+
+(*系统选择*)
+IF eWindows = WINCE THEN
+	sPathName := '\Hard Disk\UserData' ;
+ELSIF eWindows = WINDOWS7 THEN
+	sPathName := 'C:\TwinCATUserData';
+ELSIF eWindows = WINDOWS10 THEN
+	sPathName := 'C:\TwinCATUserData';
+END_IF;
+
+IF sFileName ='' THEN
+	sTempFileName := 'Data' ;
+ELSE
+	sTempFileName := sFileName ;
+END_IF;
+
+IF RIGHT(sTempFileName, 4)= '.xml' THEN
+	sTempFileName :=sTempFileName;
+ELSE
+	sTempFileName :=CONCAT(sTempFileName, '.xml');
+END_IF;
+
+
+
+
+CASE nStep OF
+	1:
+	(*检查输入路径是否存在*)
+	fbEnumFindFileEntry(
+		sNetId:= sNetId ,
+		sPathName:=sPathName ,
+		eCmd:=eEnumCmd_First ,
+		bExecute:= TRUE,
+		tTimeout:=T#5S );
+	IF NOT fbEnumFindFileEntry.bBusy THEN
+		fbEnumFindFileEntry(bExecute:= FALSE);
+		IF NOT fbEnumFindFileEntry.bError THEN
+			IF fbEnumFindFileEntry.bEOE THEN
+				nStep :=10 ; (*指定输入路径不存在，跳转至路径生成*)
+			ELSE
+				nStep :=11 ; (*指定输入路径存在，跳转至数据处理*)
+			END_IF;
+		ELSE
+			bError := TRUE;
+			nErrId := fbCreateDirectory.nErrId ;
+			nStep := 0 ;
+		END_IF;
+	END_IF;
+
+	10:
+	(*生成路径*)
+	fbCreateDirectory(
+		sNetId:=sNetId,
+		sPathName:= sPathName,
+		ePath:=PATH_GENERIC ,
+		bExecute:=TRUE ,
+		tTimeout:=t#5s );
+	IF NOT fbCreateDirectory.bBusy THEN
+		fbCreateDirectory(bExecute:= FALSE );
+		IF NOT  fbCreateDirectory.bError THEN
+			nStep := 1 ;
+		ELSE
+			bError := TRUE;
+			nErrId := fbCreateDirectory.nErrId ;
+			nStep := 0 ;
+		END_IF;
+	END_IF;
+
+	11:
+	(*计算数据处理次数*)
+	IF cbSymSize > SGL_FILE_BYTE_LEN THEN
+		nTotalTimes:=SEL( (cbSymSize MOD SGL_FILE_BYTE_LEN)>0,
+						     cbSymSize/SGL_FILE_BYTE_LEN ,
+						     cbSymSize/SGL_FILE_BYTE_LEN + 1 );
+	ELSE
+		nTotalTimes := 1;
+	END_IF;
+	nSerialNum := 0;(*处理序号清零*)
+	nStep := 20;
+
+	20:
+	(*数据处理排序*)
+	sFilePath :=CONCAT(CONCAT(sPathName,'\'),sTempFileName);
+	IF nTotalTimes > nSerialNum THEN
+		nSerialNum := nSerialNum + 1;
+		nStep := 21;
+	ELSE
+		nStep := 0;
+	END_IF;
+
+	21:
+	pTmpSymAddr := pSymAddr + (nSerialNum-1)*SGL_FILE_BYTE_LEN;
+	(*计算所需当前处理次数所需处理数据长度：最大值1000*)
+	IF cbSymSize<SGL_FILE_BYTE_LEN THEN
+		nTmpDataSize := cbSymSize;
+	ELSE
+		IF nSerialNum < nTotalTimes THEN
+			nTmpDataSize := SGL_FILE_BYTE_LEN;
+		ELSE
+			nTmpDataSize := cbSymSize-SGL_FILE_BYTE_LEN*(nSerialNum-1);
+		END_IF;
+	END_IF;
+	sFilePath := INSERT (sFilePath,UDINT_TO_STRING(nSerialNum),LEN(sFilePath)-4 );
+	nStep := 22;
+
+	22:
+	(*功能选择*)
+	IF eOperation = XML_SRV_WRITE THEN
+		nStep := 30 ;
+	ELSIF eOperation = XML_SRV_READ THEN
+		nStep := 40;
+	ELSIF eOperation = FILE_DELETE THEN
+		nStep := 50 ;
+	ELSE
+		nStep := 0 ;
+	END_IF;
+
+	30:(*数据存储：获取所需存储部分数据*)
+	MEMCPY(ADR(arrTmpData) , pTmpSymAddr , nTmpDataSize);
+	nStep := 31;
+
+	31:(*数据存储：存储数据*)
+	fbXmlSrvWrite(
+		sNetId:= sNetId,
+		ePath:= PATH_GENERIC,
+		nMode:= XMLSRV_ADDMISSING,
+		pSymAddr:= ADR(arrTmpData),
+		cbSymSize:= SIZEOF(arrTmpData),
+		sFilePath:= sFilePath,
+		sXPath:= sXPath,
+		bExecute:= TRUE,
+		tTimeout:= T#5S );
+	IF NOT fbXmlSrvWrite.bBusy THEN
+		fbXmlSrvWrite(bExecute:=FALSE);
+		IF NOT fbXmlSrvWrite.bError THEN
+			IF nTotalTimes = nSerialNum THEN(*数据读取完成后置位DONE信号*)
+				bDone := TRUE;
+			END_IF;
+			nStep := 20 ;
+		ELSE
+			bError := TRUE;
+			nErrId := fbXmlSrvWrite.nErrId ;
+			nStep := 20 ;
+		END_IF;
+	END_IF;
+
+	40:(*读取数据:清空数据暂存区域*)
+	MEMSET(ADR(arrTmpData) , 0 , SIZEOF(arrTmpData));
+	nStep := 41;
+
+	41:(*读取数据*)
+	fbXmlSrvRead(
+		sNetId:=sNetId ,
+		ePath:=PATH_GENERIC ,
+		nMode:=XMLSRV_SKIPMISSING ,
+		pSymAddr:=ADR(arrTmpData),
+		cbSymSize:=SIZEOF(arrTmpData),
+		sFilePath:= sFilePath,
+		sXPath:= sXPath,
+		bExecute:=TRUE,
+		tTimeout:=T#5S  );
+	IF NOT fbXmlSrvRead.bBusy THEN
+		fbXmlSrvRead(bExecute:=FALSE);
+		IF NOT fbXmlSrvRead.bError THEN
+			IF nTotalTimes = nSerialNum THEN(*数据处理完成后置位DONE信号*)
+				bDone := TRUE;
+			END_IF;
+			MEMCPY(pTmpSymAddr , ADR(arrTmpData) , nTmpDataSize);
+			nStep := 20 ;
+		ELSE
+			bError := TRUE;
+			nErrId := fbXmlSrvRead.nErrId ;
+			nStep := 20 ;
+		END_IF;
+	END_IF;
+
+	50:
+	(*文件删除*)
+	fbFileDelete(
+		sNetId:=sNetId,
+		sPathName:=sFilePath ,
+		ePath:=PATH_GENERIC ,
+		bExecute:=TRUE ,
+		tTimeout:= t#5s );
+	IF NOT fbFileDelete.bBusy THEN
+		fbFileDelete(bExecute:=FALSE);
+		IF NOT fbFileDelete.bError THEN
+			IF nTotalTimes = nSerialNum THEN(*数据处理完成后置位DONE信号*)
+				bDone := TRUE;
+			END_IF;
+			nStep := 20 ;
+		ELSE
+			bError := TRUE;
+			nErrId := fbFileDelete.nErrId ;
+			nStep := 20 ;
+		END_IF;
+	END_IF;
+
+END_CASE;
+
+IF nStep<>0 THEN
+	bBusy:=TRUE;
+ELSE
+	bBusy := FALSE;
+END_IF;
+
+(*无触发信号，程序自动复位*)
+IF  NOT bXmlSrvWrite AND NOT  bXmlSrvRead AND NOT bFileDelete THEN
+	(*无正在执行功能块，复位循环*)
+	IF NOT fbEnumFindFileEntry.bBusy AND NOT fbCreateDirectory.bBusy AND NOT
+	fbFileDelete.bBusy AND NOT fbXmlSrvWrite.bBusy AND NOT
+	fbXmlSrvWrite.bBusy AND NOT fbXmlSrvRead.bBusy THEN
+		nStep := 0;
+	END_IF;
+	nErrId := 0 ;
+	bDone := FALSE;
+	bError := FALSE;
+END_IF;
